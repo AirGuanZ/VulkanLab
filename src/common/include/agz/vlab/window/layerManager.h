@@ -2,8 +2,6 @@
 
 #include <vector>
 
-#include <vulkan/vulkan.h>
-
 #include <agz/vlab/common.h>
 
 AGZ_VULKAN_LAB_BEGIN

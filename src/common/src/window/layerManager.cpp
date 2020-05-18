@@ -1,4 +1,4 @@
-#include <agz/vlab/layerManager.h>
+#include <agz/vlab/window/layerManager.h>
 
 AGZ_VULKAN_LAB_BEGIN
 

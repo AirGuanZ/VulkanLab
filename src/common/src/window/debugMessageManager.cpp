@@ -1,6 +1,6 @@
 #include <iostream>
 
-#include <agz/vlab/debugMessageManager.h>
+#include <agz/vlab/window/debugMessageManager.h>
 
 AGZ_VULKAN_LAB_BEGIN
 
@@ -18,38 +18,17 @@ namespace
     }
 }
 
-DebugMessageManager::DebugMessageManager(VkInstance instance)
+DebugMessageManager::DebugMessageManager(vk::Instance instance, Level level)
 {
-    vkInstance_  = instance;
-    vkMessenger_ = nullptr;
+    instance_  = instance;
 
-    VkDebugUtilsMessengerCreateInfoEXT info = _createInfo();
+    const auto &info = _createInfo(level);
 
-    auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-        instance, "vkCreateDebugUtilsMessengerEXT");
-    if(!func)
-    {
-        throw std::runtime_error(
-            "failed to get proc addr: vkCreateDebugUtilsMessengerEXT");
-    }
+    messenger_ = instance_.createDebugUtilsMessengerEXTUnique(info);
 
-    if(func(instance, &info, nullptr, &vkMessenger_) != VK_SUCCESS)
-        throw std::runtime_error("failed to create debug utils messenger");
-
-    printToStdErrLevel_ = Level::Infomation;
+    printToStdErrLevel_ = level;
     printToStdErr_.set_class_instance(this);
     printToStdErr_.set_mem_func(&DebugMessageManager::printToStdErrImpl);
-}
-
-DebugMessageManager::~DebugMessageManager()
-{
-    if(vkInstance_ && vkMessenger_)
-    {
-        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-            vkInstance_, "vkDestroyDebugUtilsMessengerEXT");
-        if(func)
-            func(vkInstance_, vkMessenger_, nullptr);
-    }
 }
 
 void DebugMessageManager::enableStdErrOutput(Level level)
@@ -63,19 +42,39 @@ void DebugMessageManager::disableStdErrOutput()
     detach(&printToStdErr_);
 }
 
-VkDebugUtilsMessengerCreateInfoEXT DebugMessageManager::_createInfo() noexcept
+vk::DebugUtilsMessengerCreateInfoEXT DebugMessageManager::_createInfo(
+        Level level) noexcept
 {
-    VkDebugUtilsMessengerCreateInfoEXT info = {};
-    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
-                         | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-                         | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
-                     | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-                     | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    info.pUserData       = this;
-    info.pfnUserCallback = vkDebugCallback;
-    return info;
+    vk::DebugUtilsMessageSeverityFlagsEXT severity;
+    switch(level)
+    {
+    case Level::Verbose:
+        severity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError   |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo    |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose;
+        break;
+    case Level::Infomation:
+        severity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError   |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo;
+        break;
+    case Level::Warning:
+        severity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError   |
+                   vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning;
+        break;
+    default:
+        severity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+        break;
+    }
+
+    const auto type = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                      vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation|
+                      vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+
+    return vk::DebugUtilsMessengerCreateInfoEXT(
+        {}, severity, type, vkDebugCallback, this);
+
 }
 
 void DebugMessageManager::_message(const DebugMessage &msg)

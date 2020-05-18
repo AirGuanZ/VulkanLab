@@ -1,7 +1,5 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
-
 #include <agz/utility/event.h>
 #include <agz/utility/misc.h>
 
@@ -28,15 +26,13 @@ public:
         Error      = 3
     };
 
-    explicit DebugMessageManager(VkInstance instance);
-
-    ~DebugMessageManager();
+    DebugMessageManager(vk::Instance instance, Level level);
 
     void enableStdErrOutput(Level level);
 
     void disableStdErrOutput();
 
-    VkDebugUtilsMessengerCreateInfoEXT _createInfo() noexcept;
+    vk::DebugUtilsMessengerCreateInfoEXT _createInfo(Level level) noexcept;
 
     void _message(const DebugMessage &msg);
 
@@ -54,8 +50,11 @@ private:
 
     PrintToStdErr printToStdErr_;
 
-    VkInstance vkInstance_;
-    VkDebugUtilsMessengerEXT vkMessenger_;
+    vk::UniqueDebugUtilsMessengerEXT messenger_;
+
+    vk::Instance instance_;
 };
+
+using DebugMsgLevel = DebugMessageManager::Level;
 
 AGZ_VULKAN_LAB_END

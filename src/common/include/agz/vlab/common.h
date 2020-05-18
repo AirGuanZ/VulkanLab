@@ -1,6 +1,9 @@
 #pragma once
 
+#include <vulkan/vulkan.hpp>
+
 #include <agz/utility/math.h>
+#include <agz/utility/misc.h>
 
 #define AGZ_VULKAN_LAB_BEGIN namespace agz::vlab {
 #define AGZ_VULKAN_LAB_END   }

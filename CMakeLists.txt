@@ -27,3 +27,4 @@ ADD_SUBDIRECTORY(lib/agz-utils)
 
 ADD_SUBDIRECTORY(src/common)
 ADD_SUBDIRECTORY(src/00_init)
+ADD_SUBDIRECTORY(src/01_triangle)

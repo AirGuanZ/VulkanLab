@@ -1,26 +1,22 @@
 #include <iostream>
 
-#include <agz/vlab/debugMessageManager.h>
-#include <agz/vlab/window.h>
+#include <agz/vlab/vlab.h>
 
 int run()
 {
     agz::vlab::ValidationLayerManager layers;
     layers.add("VK_LAYER_KHRONOS_validation");
 
-    agz::vlab::WindowDesc windowDesc;
-    windowDesc
+    agz::vlab::Window window;
+    window.Initialize(agz::vlab::WindowDesc()
         .setSize(640, 480)
-        .setTitle("AGZ Vulkan Lab")
+        .setTitle("AirGuanZ's Vulkan Lab: 00.init")
         .setDebugMessage(true)
         .setLayers(&layers)
-        .setResizable(true);
-
-    agz::vlab::Window window;
-    window.Initialize(windowDesc);
+        .setResizable(true));
 
     window.getDebugMsgMgr()->enableStdErrOutput(
-        agz::vlab::DebugMessageManager::Level::Verbose);
+        agz::vlab::DebugMsgLevel::Verbose);
 
     while(!window.getCloseFlag())
         window.doEvents();
