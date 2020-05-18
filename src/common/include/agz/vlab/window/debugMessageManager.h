@@ -1,7 +1,6 @@
 #pragma once
 
 #include <agz/utility/event.h>
-#include <agz/utility/misc.h>
 
 #include <agz/vlab/common.h>
 
