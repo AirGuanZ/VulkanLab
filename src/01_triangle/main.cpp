@@ -56,8 +56,15 @@ class TrianglePipeline : public agz::misc::uncopyable_t
     vk::UniqueCommandPool cmdPool_;
     std::vector<vk::CommandBuffer> cmdBuffers_;
 
-    vk::UniqueSemaphore imageSemaphore_;
-    vk::UniqueSemaphore renderSemaphore_;
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
+    std::vector<vk::UniqueSemaphore> imageSemaphores_;
+    std::vector<vk::UniqueSemaphore> renderSemaphores_;
+
+    std::vector<vk::UniqueFence> inFlightFrames_;
+    std::vector<vk::Fence> imageInFlight_;
+
+    uint32_t currentFrame_ = 0;
 
     void initShaders(vk::Device device)
     {
@@ -279,11 +286,23 @@ class TrianglePipeline : public agz::misc::uncopyable_t
         }
     }
 
-    void initSync(vk::Device device)
+    void initSync(const agz::vlab::Window &window)
     {
-        vk::SemaphoreCreateInfo info;
-        imageSemaphore_ = device.createSemaphoreUnique(info);
-        renderSemaphore_ = device.createSemaphoreUnique(info);
+        auto device = window.getDevice();
+
+        imageInFlight_.resize(window.getSwapchainImageCount());
+
+        vk::SemaphoreCreateInfo semaphoreInfo;
+
+        vk::FenceCreateInfo fenceInfo;
+        fenceInfo.setFlags(vk::FenceCreateFlagBits::eSignaled);
+
+        for(uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            imageSemaphores_.push_back(device.createSemaphoreUnique(semaphoreInfo));
+            renderSemaphores_.push_back(device.createSemaphoreUnique(semaphoreInfo));
+            inFlightFrames_.push_back(device.createFenceUnique(fenceInfo));
+        }
     }
 
 public:
@@ -297,13 +316,15 @@ public:
         initGraphicsPipeline(window);
         initFramebuffer(window);
         initCmdBuffers(window);
-        initSync(window.getDevice());
+        initSync(window);
     }
 
     ~TrianglePipeline()
     {
-        imageSemaphore_.reset();
-        renderSemaphore_.reset();
+        imageSemaphores_.clear();
+        renderSemaphores_.clear();
+        inFlightFrames_.clear();
+        imageInFlight_.clear();
 
         cmdBuffers_.clear();
         cmdPool_.reset();
@@ -321,18 +342,25 @@ public:
 
     void renderFrame(agz::vlab::Window &window)
     {
+        vk::Fence frameFence[] = { inFlightFrames_[currentFrame_].get() };
+        (void)device_.waitForFences(1, frameFence, true, UINT64_MAX);
+        
         const auto imageIndex = window.acquireNextImage(
-            UINT64_MAX, imageSemaphore_.get(), nullptr).value;
+            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr).value;
+
+        if(imageInFlight_[imageIndex])
+            device_.waitForFences(1, &imageInFlight_[imageIndex], true, UINT64_MAX);
+        imageInFlight_[imageIndex] = inFlightFrames_[currentFrame_].get();
 
         vk::Semaphore waitSemaphores[] = {
-            imageSemaphore_.get()
+            imageSemaphores_[currentFrame_].get()
         };
         vk::PipelineStageFlags waitStages[] = {
             vk::PipelineStageFlagBits::eColorAttachmentOutput
         };
 
         vk::Semaphore signalSemaphores[] = {
-            renderSemaphore_.get()
+            renderSemaphores_[currentFrame_].get()
         };
 
         vk::SubmitInfo submitInfo;
@@ -345,8 +373,9 @@ public:
             .setSignalSemaphoreCount(1)
             .setPSignalSemaphores(signalSemaphores);
 
+        (void)device_.resetFences(1, frameFence);
         (void)window.getGraphicsQueue().submit(
-            1, &submitInfo, nullptr);
+            1, &submitInfo, inFlightFrames_[currentFrame_].get());
 
         vk::SwapchainKHR swapchains[] = { window.getSwapchain() };
 
@@ -360,7 +389,7 @@ public:
 
         (void)window.getPresentQueue().presentKHR(presentInfo);
 
-        window.getGraphicsQueue().waitIdle();
+        currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void waitIdle()

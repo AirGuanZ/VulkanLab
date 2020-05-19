@@ -5,7 +5,7 @@ PROJECT(VulkanLab)
 ################ CMake Properties
 
 IF(NOT CMAKE_BUILD_TYPE)
-    SET(CMAKE_BUILD_TYPE "Release" CACHE STRING "Options: Debug Release RelWithDebInfo MinSizeRel." FORCE)
+    SET(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
 ENDIF()
 
 ################ Vulkan
@@ -22,9 +22,6 @@ SET(GLFW_INSTALL        OFF)
 ADD_SUBDIRECTORY(lib/glfw)
 
 ################ shaderc
-
-SET(SHADERC_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-SET(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
 
 ADD_SUBDIRECTORY(lib/shaderc)
 
