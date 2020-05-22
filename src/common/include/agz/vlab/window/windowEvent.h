@@ -6,22 +6,35 @@
 
 AGZ_VULKAN_LAB_BEGIN
 
-struct FramebufferResizeEvent
+struct WindowPreRecreateSwapchainEvent
 {
-    int newWidth;
-    int newHeight;
+
+};
+
+struct WindowPostRecreateSwapchainEvent
+{
+    int width;
+    int height;
 };
 
 struct WindowCloseEvent { };
 
 class WindowEventManager :
-    public event::sender_t<FramebufferResizeEvent, WindowCloseEvent>
+    public event::sender_t<
+                WindowPreRecreateSwapchainEvent,
+                WindowPostRecreateSwapchainEvent,
+                WindowCloseEvent>
 {
 public:
 
-    void send(const FramebufferResizeEvent &e) const
+    void send(const WindowPreRecreateSwapchainEvent &e) const
     {
-        sender_t::send<FramebufferResizeEvent>(e);
+        sender_t::send<WindowPreRecreateSwapchainEvent>(e);
+    }
+
+    void send(const WindowPostRecreateSwapchainEvent &e) const
+    {
+        sender_t::send<WindowPostRecreateSwapchainEvent >(e);
     }
 
     void send(const WindowCloseEvent &e) const

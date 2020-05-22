@@ -12,10 +12,14 @@ AGZ_VULKAN_LAB_BEGIN
 
 struct WindowImplData
 {
-    GLFWwindow *glfwWindow = nullptr;
+    // desc settings
 
-    int framebufferWidth  = 0;
-    int framebufferHeight = 0;
+    int swapchainImageCount = 2;
+    bool clipObscuredPixels  = true;
+
+    // others
+
+    GLFWwindow *glfwWindow = nullptr;
 
     vk::UniqueInstance instance;
 
@@ -24,8 +28,8 @@ struct WindowImplData
     vk::UniqueSurfaceKHR surface;
     vk::PhysicalDevice physicalDevice;
 
-    GraphicsDevice   graphicsDevice;
-    vk::Device device; // not owner;
+    GraphicsDevice graphicsDevice;
+    vk::Device     device; // not owner;
 
     vk::UniqueSwapchainKHR swapchain;
 
@@ -39,6 +43,16 @@ struct WindowImplData
 namespace
 {
     int glfwRefCounter = 0;
+
+    std::unordered_map<GLFWwindow *, Window *> glfwWindowToWindow;
+
+    void glfwFramebufferResizeCallback(GLFWwindow *window, int width, int height)
+    {
+        auto it = glfwWindowToWindow.find(window);
+        if(it == glfwWindowToWindow.end())
+            return;
+        it->second->recreateSwapchain();
+    }
 
     VKAPI_ATTR VkBool32 VKAPI_CALL vkDebugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT      severity,
@@ -167,14 +181,14 @@ namespace
 
     struct SwapchainDesc
     {
-        vk::SurfaceCapabilitiesKHR capabilities;
-        vk::SurfaceFormatKHR       format;
-        vk::PresentModeKHR         presentMode;
-        uint32_t                   graphicsQueueFamilyIndex;
-        uint32_t                   presentQueueFamilyIndex;
-        uint32_t                   imageCount;
-        vk::Extent2D               extent;
-        bool                       clipped;
+        vk::SurfaceCapabilitiesKHR capabilities             = {};
+        vk::SurfaceFormatKHR       format                   = {};
+        vk::PresentModeKHR         presentMode              = vk::PresentModeKHR::eFifo;
+        uint32_t                   graphicsQueueFamilyIndex = 0;
+        uint32_t                   presentQueueFamilyIndex  = 0;
+        uint32_t                   imageCount               = 0;
+        vk::Extent2D               extent                   = {};
+        bool                       clipped                  = true;
     };
 
     vk::UniqueSwapchainKHR createVkSwapchain(
@@ -371,6 +385,8 @@ void Window::Initialize(const WindowDesc &desc)
         delete data_;
         data_ = nullptr;
     });
+    data_->swapchainImageCount = desc.swapchainImageCount;
+    data_->clipObscuredPixels   = desc.clipObscuredPixels;
 
     // create glfw window
 
@@ -384,10 +400,15 @@ void Window::Initialize(const WindowDesc &desc)
         desc.width, desc.height, desc.title.c_str(), monitor, nullptr);
     if(!data_->glfwWindow)
         throw std::runtime_error("failed to create glfw window");
+    glfwWindowToWindow[data_->glfwWindow] = this;
     misc::scope_guard_t windowGuard([&]
     {
+        glfwWindowToWindow.erase(data_->glfwWindow);
         glfwDestroyWindow(data_->glfwWindow);
     });
+
+    glfwSetFramebufferSizeCallback(
+        data_->glfwWindow, glfwFramebufferResizeCallback);
 
     // instance
 
@@ -412,8 +433,9 @@ void Window::Initialize(const WindowDesc &desc)
 
     // framebuffer size
 
+    int framebufferWidth, framebufferHeight;
     glfwGetFramebufferSize(
-        data_->glfwWindow, &data_->framebufferWidth, &data_->framebufferHeight);
+        data_->glfwWindow, &framebufferWidth, &framebufferHeight);
 
     // window surface
 
@@ -466,8 +488,8 @@ void Window::Initialize(const WindowDesc &desc)
     const auto scPresentMode = swapchainProperty.choosePresentMode(
         { vk::PresentModeKHR::eMailbox });
     const auto scExtent = swapchainProperty.chooseExtent(
-        { static_cast<uint32_t>(data_->framebufferWidth),
-          static_cast<uint32_t>(data_->framebufferHeight) });
+        { static_cast<uint32_t>(framebufferWidth),
+          static_cast<uint32_t>(framebufferHeight) });
     const uint32_t scGraphicsQueueFamilyIndex =
         data_->graphicsDevice.graphicsQueueFamilyIndex();
     const uint32_t scPresentQueueFamilyIndex =
@@ -539,6 +561,7 @@ void Window::Destroy()
 
     data_->instance.reset();
 
+    glfwWindowToWindow.erase(data_->glfwWindow);
     glfwDestroyWindow(data_->glfwWindow);
 
     delete data_;
@@ -620,6 +643,75 @@ vk::ResultValue<uint32_t> Window::acquireNextImage(
 {
     return data_->device.acquireNextImageKHR(
         data_->swapchain.get(), timeout, semaphore, fence);
+}
+
+void Window::recreateSwapchain()
+{
+    int framebufferWidth, framebufferHeight;
+    glfwGetFramebufferSize(
+        data_->glfwWindow, &framebufferWidth, &framebufferHeight);
+    while(framebufferWidth == 0 || framebufferHeight == 0)
+    {
+        glfwGetFramebufferSize(
+            data_->glfwWindow, &framebufferWidth, &framebufferHeight);
+        glfwWaitEvents();
+    }
+
+    // pre recreation
+
+    send(WindowPreRecreateSwapchainEvent{});
+
+    data_->device.waitIdle();
+
+    data_->swapchainImageViews.clear();
+    data_->swapchainImages.clear();
+    data_->swapchain.reset();
+
+    const auto swapchainProperty = querySwapchainProperty(
+        data_->physicalDevice, data_->surface.get());
+    const auto scFormat = swapchainProperty.chooseFormat(
+        { { vk::Format::eB8G8R8A8Srgb, vk::ColorSpaceKHR::eSrgbNonlinear } });
+    const auto scPresentMode = swapchainProperty.choosePresentMode(
+        { vk::PresentModeKHR::eMailbox });
+    const auto scExtent = swapchainProperty.chooseExtent(
+        { static_cast<uint32_t>(framebufferWidth),
+          static_cast<uint32_t>(framebufferHeight) });
+    const uint32_t scGraphicsQueueFamilyIndex =
+        data_->graphicsDevice.graphicsQueueFamilyIndex();
+    const uint32_t scPresentQueueFamilyIndex =
+        data_->graphicsDevice.presentQueueFamilyIndex();
+    
+    SwapchainDesc scDesc;
+    scDesc.capabilities             = swapchainProperty.capabilities;
+    scDesc.format                   = scFormat;
+    scDesc.presentMode              = scPresentMode;
+    scDesc.graphicsQueueFamilyIndex = scGraphicsQueueFamilyIndex;
+    scDesc.presentQueueFamilyIndex  = scPresentQueueFamilyIndex;
+    scDesc.imageCount               = data_->swapchainImageCount;
+    scDesc.extent                   = scExtent;
+    scDesc.clipped                  = data_->clipObscuredPixels;
+
+    data_->swapchain = createVkSwapchain(
+        data_->device, data_->surface.get(), scDesc);
+    data_->swapchainExtent = scDesc.extent;
+    data_->swapchainFormat = scDesc.format;
+
+    // swapchain images
+
+    data_->swapchainImages = data_->device.getSwapchainImagesKHR(
+        data_->swapchain.get());
+
+    // swapchain image views
+
+    data_->swapchainImageViews = createSwapchainImageViews(
+        data_->device, data_->swapchainFormat.format, data_->swapchainImages);
+
+    // post recreation
+
+    send(WindowPostRecreateSwapchainEvent{
+        static_cast<int>(scExtent.width),
+        static_cast<int>(scExtent.height)
+    });
 }
 
 AGZ_VULKAN_LAB_END

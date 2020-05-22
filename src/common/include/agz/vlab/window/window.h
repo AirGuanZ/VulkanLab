@@ -93,6 +93,8 @@ public:
     vk::ResultValue<uint32_t> acquireNextImage(
         uint64_t timeout, vk::Semaphore semaphore, vk::Fence fence) const;
 
+    void recreateSwapchain();
+
 private:
 
     WindowImplData *data_ = nullptr;

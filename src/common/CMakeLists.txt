@@ -7,13 +7,15 @@ SET(Target AGZVLab)
 FILE(GLOB_RECURSE SRC
 		"${PROJECT_SOURCE_DIR}/src/*.cpp"
 		"${PROJECT_SOURCE_DIR}/include/agz/*.h"
-		"${PROJECT_SOURCE_DIR}/include/agz/*.inl")
+		"${PROJECT_SOURCE_DIR}/include/agz/*.inl"
+		"${PROJECT_SOURCE_DIR}/include/vma/*.h")
 
 ADD_LIBRARY(${Target} STATIC ${SRC})
 
 FOREACH(_SRC IN ITEMS ${SRC})
     GET_FILENAME_COMPONENT(SRC "${_SRC}" PATH)
     STRING(REPLACE "${PROJECT_SOURCE_DIR}/include/agz/vlab" "include" _GRP_PATH "${SRC}")
+    STRING(REPLACE "${PROJECT_SOURCE_DIR}/include/vma" "include/vma" _GRP_PATH "${_GRP_PATH}")
     STRING(REPLACE "${PROJECT_SOURCE_DIR}/src" "src" _GRP_PATH "${_GRP_PATH}")
     STRING(REPLACE "/" "\\" _GRP_PATH "${_GRP_PATH}")
     SOURCE_GROUP("${_GRP_PATH}" FILES "${_SRC}")

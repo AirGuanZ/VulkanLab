@@ -305,9 +305,29 @@ class TrianglePipeline : public agz::misc::uncopyable_t
         }
     }
 
+    void preRecreateSwapchain()
+    {
+        device_.waitIdle();
+
+        cmdBuffers_.clear();
+        cmdPool_.reset();
+        framebuffers_.clear();
+        pipeline_.reset();
+        layout_.reset();
+        renderpass_.reset();
+    }
+
+    void postRecreateSwapchain(const agz::vlab::Window &window)
+    {
+        initRenderpass(window);
+        initGraphicsPipeline(window);
+        initFramebuffer(window);
+        initCmdBuffers(window);
+    }
+
 public:
 
-    explicit TrianglePipeline(const agz::vlab::Window &window)
+    explicit TrianglePipeline(agz::vlab::Window &window)
     {
         device_ = window.getDevice();
 
@@ -317,6 +337,23 @@ public:
         initFramebuffer(window);
         initCmdBuffers(window);
         initSync(window);
+
+        auto preHandler = std::make_shared<agz::event::functional_receiver_t<
+            agz::vlab::WindowPreRecreateSwapchainEvent>>(
+                [&](const agz::vlab::WindowPreRecreateSwapchainEvent&)
+        {
+            preRecreateSwapchain();
+        });
+
+        auto postHandler = std::make_shared<agz::event::functional_receiver_t<
+            agz::vlab::WindowPostRecreateSwapchainEvent>>(
+                [&](const agz::vlab::WindowPostRecreateSwapchainEvent&)
+        {
+            postRecreateSwapchain(window);
+        });
+
+        window.attach<agz::vlab::WindowPreRecreateSwapchainEvent>(preHandler);
+        window.attach<agz::vlab::WindowPostRecreateSwapchainEvent>(postHandler);
     }
 
     ~TrianglePipeline()
@@ -349,7 +386,10 @@ public:
             UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr).value;
 
         if(imageInFlight_[imageIndex])
-            device_.waitForFences(1, &imageInFlight_[imageIndex], true, UINT64_MAX);
+        {
+            device_.waitForFences(
+                1, &imageInFlight_[imageIndex], true, UINT64_MAX);
+        }
         imageInFlight_[imageIndex] = inFlightFrames_[currentFrame_].get();
 
         vk::Semaphore waitSemaphores[] = {
@@ -409,7 +449,7 @@ int run()
         .setTitle("AirGuanZ's Vulkan Lab: 01.triangle")
         .setDebugMessage(true)
         .setLayers(&layers)
-        .setResizable(false));
+        .setResizable(true));
 
     window.getDebugMsgMgr()->enableStdErrOutput(
         agz::vlab::DebugMsgLevel::Verbose);
