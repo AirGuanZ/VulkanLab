@@ -1,46 +1,75 @@
 #include <iostream>
 
+#include <vma/vk_mem_alloc.h>
+
 #include <agz/vlab/vlab.h>
+
+using agz::vlab::Vec2;
+using agz::vlab::Vec3;
 
 const char *VERTEX_SHADER_SOURCE = R"___(
 #version 450
 
-layout(location = 0) out vec3 fragColor;
+layout(location = 0) in vec2 iPosition;
+layout(location = 1) in vec3 iColor;
 
-vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),
-    vec2(0.5, 0.5),
-    vec2(-0.5, 0.5)
-);
-
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
+layout(location = 0) out vec3 oColor;
 
 void main()
 {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    fragColor = colors[gl_VertexIndex];
+    gl_Position = vec4(iPosition, 0.0, 1.0);
+    oColor = iColor;
 }
 )___";
 
 const char *FRAGMENT_SHADER_SOURCE = R"___(
 #version 450
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec3 iColor;
 
-layout(location = 0) out vec4 outColor;
+layout(location = 0) out vec4 oColor;
 
 void main()
 {
-    outColor = vec4(fragColor, 1.0);
+    oColor = vec4(iColor, 1.0);
 }
 )___";
 
-class TrianglePipeline : public agz::misc::uncopyable_t
+class VertexIndexBufferPipeline : public agz::misc::uncopyable_t
 {
+    struct Vertex
+    {
+        Vec2 position;
+        Vec3 color;
+
+        static vk::VertexInputBindingDescription getBindingDesc() noexcept
+        {
+            vk::VertexInputBindingDescription ret;
+            ret
+                .setBinding(0)
+                .setInputRate(vk::VertexInputRate::eVertex)
+                .setStride(sizeof(Vertex));
+            return ret;
+        }
+
+        static std::array<vk::VertexInputAttributeDescription, 2>
+            getAttribDesc() noexcept
+        {
+            std::array<vk::VertexInputAttributeDescription, 2> ret;
+            ret[0]
+                .setBinding(0)
+                .setFormat(vk::Format::eR32G32Sfloat)
+                .setLocation(0)
+                .setOffset(offsetof(Vertex, position));
+            ret[1]
+                .setBinding(0)
+                .setFormat(vk::Format::eR32G32B32Sfloat)
+                .setLocation(1)
+                .setOffset(offsetof(Vertex, color));
+            return ret;
+        }
+    };
+
     vk::Device device_;
 
     vk::UniqueShaderModule vertShader_;
@@ -66,6 +95,11 @@ class TrianglePipeline : public agz::misc::uncopyable_t
     std::vector<vk::Fence> imageInFlight_;
 
     uint32_t currentFrame_ = 0;
+
+    std::unique_ptr<agz::vlab::VMAAlloc> allocator_;
+
+    agz::vlab::VMAUniqueBuffer vertexBuffer_;
+    agz::vlab::VMAUniqueBuffer indexBuffer_;
 
     void initShaders(vk::Device device)
     {
@@ -156,7 +190,15 @@ class TrianglePipeline : public agz::misc::uncopyable_t
 
     void initGraphicsPipeline(const agz::vlab::Window &window)
     {
+        const auto vertexBindingDesc = Vertex::getBindingDesc();
+        const auto vertexAttribDesc  = Vertex::getAttribDesc();
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+        vertexInputInfo
+            .setVertexBindingDescriptionCount(1)
+            .setPVertexBindingDescriptions(&vertexBindingDesc)
+            .setVertexAttributeDescriptionCount(
+                static_cast<uint32_t>(vertexAttribDesc.size()))
+            .setPVertexAttributeDescriptions(vertexAttribDesc.data());
 
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
         inputAssembly.setTopology(vk::PrimitiveTopology::eTriangleList);
@@ -280,7 +322,16 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             cb.beginRenderPass(renderpassInfo, vk::SubpassContents::eInline);
 
             cb.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_.get());
-            cb.draw(3, 1, 0, 0);
+
+            vk::Buffer vertexBuffers[] = { vertexBuffer_.get() };
+            vk::DeviceSize offsets[]   = { 0 };
+            cb.bindVertexBuffers(0, 1, vertexBuffers, offsets);
+
+            //cb.draw(3, 1, 0, 0);
+
+            cb.bindIndexBuffer(indexBuffer_.get(), 0, vk::IndexType::eUint16);
+            
+            cb.drawIndexed(6, 1, 0, 0, 0);
 
             cb.endRenderPass();
             cb.end();
@@ -306,6 +357,52 @@ class TrianglePipeline : public agz::misc::uncopyable_t
         }
     }
 
+    void initVertexIndexBuffer(const agz::vlab::Window &window)
+    {
+        allocator_ = std::make_unique<agz::vlab::VMAAlloc>(
+            window.getInstance(),
+            window.getPhysicalDevice(),
+            window.getDevice());
+
+        // vertex buffer
+
+        const Vertex vertexData[] = {
+            { { -0.5f, +0.5f }, { 1.0f, 0.0f, 0.0f } },
+            { { -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+            { { +0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f } },
+            { { +0.5f, +0.5f }, { 0.0f, 1.0f, 1.0f } }
+        };
+
+        vk::BufferCreateInfo bufInfo;
+        bufInfo
+            .setSize(sizeof(vertexData))
+            .setUsage(vk::BufferUsageFlagBits::eVertexBuffer)
+            .setSharingMode(vk::SharingMode::eExclusive);
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+        vertexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedVertexBufferData = vertexBuffer_.map();
+        std::memcpy(mappedVertexBufferData, vertexData, sizeof(vertexData));
+        vertexBuffer_.unmap();
+
+        // index buffer
+
+        const uint16_t indexData[] = { 0, 1, 2, 2, 3, 0 };
+
+        bufInfo
+            .setSize(sizeof(indexData))
+            .setUsage(vk::BufferUsageFlagBits::eIndexBuffer);
+
+        indexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedIndexBufferData = indexBuffer_.map();
+        std::memcpy(mappedIndexBufferData, indexData, sizeof(indexData));
+        indexBuffer_.unmap();
+    }
+
     void preRecreateSwapchain()
     {
         device_.waitIdle();
@@ -328,7 +425,7 @@ class TrianglePipeline : public agz::misc::uncopyable_t
 
 public:
 
-    explicit TrianglePipeline(agz::vlab::Window &window)
+    explicit VertexIndexBufferPipeline(agz::vlab::Window &window)
     {
         device_ = window.getDevice();
 
@@ -336,6 +433,7 @@ public:
         initShaders(window.getDevice());
         initGraphicsPipeline(window);
         initFramebuffer(window);
+        initVertexIndexBuffer(window);
         initCmdBuffers(window);
         initSync(window);
 
@@ -357,7 +455,7 @@ public:
         window.attach<agz::vlab::WindowPostRecreateSwapchainEvent>(postHandler);
     }
 
-    ~TrianglePipeline()
+    ~VertexIndexBufferPipeline()
     {
         imageSemaphores_.clear();
         renderSemaphores_.clear();
@@ -366,6 +464,10 @@ public:
 
         cmdBuffers_.clear();
         cmdPool_.reset();
+
+        vertexBuffer_.reset();
+        indexBuffer_.reset();
+        allocator_.reset();
 
         framebuffers_.clear();
 
@@ -447,7 +549,7 @@ int run()
     agz::vlab::Window window;
     window.Initialize(agz::vlab::WindowDesc()
         .setSize(640, 480)
-        .setTitle("AirGuanZ's Vulkan Lab: 01.triangle")
+        .setTitle("AirGuanZ's Vulkan Lab: 02.vertex index buffer")
         .setDebugMessage(true)
         .setLayers(&layers)
         .setResizable(true));
@@ -455,7 +557,7 @@ int run()
     window.getDebugMsgMgr()->enableStdErrOutput(
         agz::vlab::DebugMsgLevel::Verbose);
 
-    TrianglePipeline pipeline(window);
+    VertexIndexBufferPipeline  pipeline(window);
 
     while(!window.getCloseFlag())
     {

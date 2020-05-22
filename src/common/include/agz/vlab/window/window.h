@@ -69,6 +69,10 @@ public:
 
     void setCloseFlag(bool close);
 
+    vk::Instance getInstance() const noexcept;
+
+    vk::PhysicalDevice getPhysicalDevice() const noexcept;
+
     DebugMessageManager *getDebugMsgMgr() const;
 
     GraphicsDevice &getGraphicsDevice() const noexcept;

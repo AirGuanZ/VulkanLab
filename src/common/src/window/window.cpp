@@ -585,6 +585,16 @@ void Window::setCloseFlag(bool close)
     glfwSetWindowShouldClose(data_->glfwWindow, close);
 }
 
+vk::Instance Window::getInstance() const noexcept
+{
+    return data_->instance.get();
+}
+
+vk::PhysicalDevice Window::getPhysicalDevice() const noexcept
+{
+    return data_->physicalDevice;
+}
+
 DebugMessageManager *Window::getDebugMsgMgr() const
 {
     if(!data_->debugMsgMgr)
