@@ -19,4 +19,6 @@ using Vec2i = math::vec2i;
 using Mat3 = math::mat3f_c;
 using Mat4 = math::mat4f_c;
 
+using Trans4 = Mat4::left_transform;
+
 AGZ_VULKAN_LAB_END

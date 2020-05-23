@@ -1,46 +1,105 @@
+#include <chrono>
 #include <iostream>
 
+#include <vma/vk_mem_alloc.h>
+
 #include <agz/vlab/vlab.h>
+
+using agz::vlab::Vec2;
+using agz::vlab::Vec3;
+using agz::vlab::Mat4;
+using agz::vlab::Trans4;
 
 const char *VERTEX_SHADER_SOURCE = R"___(
 #version 450
 
-layout(location = 0) out vec3 fragColor;
+layout(binding = 0) uniform UniformBufferObject
+{
+    mat4 projViewModel;
+} ubo;
 
-vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),
-    vec2(0.5, 0.5),
-    vec2(-0.5, 0.5)
-);
+layout(location = 0) in vec2 iPosition;
+layout(location = 1) in vec3 iColor;
 
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
+layout(location = 0) out vec3 oColor;
 
 void main()
 {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    fragColor = colors[gl_VertexIndex];
+    gl_Position = ubo.projViewModel * vec4(iPosition, 0.0, 1.0);
+    oColor = iColor;
 }
 )___";
 
 const char *FRAGMENT_SHADER_SOURCE = R"___(
 #version 450
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec3 iColor;
 
-layout(location = 0) out vec4 outColor;
+layout(location = 0) out vec4 oColor;
 
 void main()
 {
-    outColor = vec4(fragColor, 1.0);
+    oColor = vec4(iColor, 1.0);
 }
 )___";
 
-class TrianglePipeline : public agz::misc::uncopyable_t
+class UniformBufferPipeline : public agz::misc::uncopyable_t
 {
+    struct Vertex
+    {
+        Vec2 position;
+        Vec3 color;
+
+        static vk::VertexInputBindingDescription getBindingDesc() noexcept
+        {
+            vk::VertexInputBindingDescription ret;
+            ret
+                .setBinding(0)
+                .setInputRate(vk::VertexInputRate::eVertex)
+                .setStride(sizeof(Vertex));
+            return ret;
+        }
+
+        static std::array<vk::VertexInputAttributeDescription, 2>
+            getAttribDesc() noexcept
+        {
+            std::array<vk::VertexInputAttributeDescription, 2> ret;
+            ret[0]
+                .setBinding(0)
+                .setFormat(vk::Format::eR32G32Sfloat)
+                .setLocation(0)
+                .setOffset(offsetof(Vertex, position));
+            ret[1]
+                .setBinding(0)
+                .setFormat(vk::Format::eR32G32B32Sfloat)
+                .setLocation(1)
+                .setOffset(offsetof(Vertex, color));
+            return ret;
+        }
+    };
+
+    struct UniformBufferObject
+    {
+        Mat4 projViewModel;
+
+        static vk::UniqueDescriptorSetLayout createDescSetLayout(vk::Device device)
+        {
+            vk::DescriptorSetLayoutBinding binding;
+            binding
+                .setBinding(0)
+                .setDescriptorCount(1)
+                .setDescriptorType(vk::DescriptorType::eUniformBuffer)
+                .setStageFlags(vk::ShaderStageFlagBits::eVertex);
+
+            vk::DescriptorSetLayoutCreateInfo info;
+            info
+                .setBindingCount(1)
+                .setPBindings(&binding);
+
+            return device.createDescriptorSetLayoutUnique(info);
+        }
+    };
+
     vk::Device device_;
 
     vk::UniqueShaderModule vertShader_;
@@ -49,8 +108,9 @@ class TrianglePipeline : public agz::misc::uncopyable_t
 
     vk::UniqueRenderPass renderpass_;
 
-    vk::UniquePipelineLayout layout_;
-    vk::UniquePipeline       pipeline_;
+    vk::UniqueDescriptorSetLayout descSetLayout_;
+    vk::UniquePipelineLayout      pipelineLayout_;
+    vk::UniquePipeline            pipeline_;
 
     std::vector<vk::UniqueFramebuffer> framebuffers_;
 
@@ -63,9 +123,18 @@ class TrianglePipeline : public agz::misc::uncopyable_t
     std::vector<vk::UniqueSemaphore> renderSemaphores_;
 
     std::vector<vk::UniqueFence> inFlightFrames_;
-    std::vector<vk::Fence> imageInFlight_;
+    std::vector<vk::Fence>       imageInFlight_;
 
     uint32_t currentFrame_ = 0;
+
+    std::unique_ptr<agz::vlab::VMAAlloc> allocator_;
+
+    agz::vlab::VMAUniqueBuffer vertexBuffer_;
+    agz::vlab::VMAUniqueBuffer indexBuffer_;
+
+    std::vector<agz::vlab::VMAUniqueBuffer> uniformBuffers_;
+    vk::UniqueDescriptorPool descPool_;
+    std::vector<vk::DescriptorSet> descSets_;
 
     void initShaders(vk::Device device)
     {
@@ -141,7 +210,6 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
             .setDstAccessMask({});
 
-        
         vk::RenderPassCreateInfo info;
         info
             .setAttachmentCount(1)
@@ -156,7 +224,15 @@ class TrianglePipeline : public agz::misc::uncopyable_t
 
     void initGraphicsPipeline(const agz::vlab::Window &window)
     {
+        const auto vertexBindingDesc = Vertex::getBindingDesc();
+        const auto vertexAttribDesc  = Vertex::getAttribDesc();
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+        vertexInputInfo
+            .setVertexBindingDescriptionCount(1)
+            .setPVertexBindingDescriptions(&vertexBindingDesc)
+            .setVertexAttributeDescriptionCount(
+                static_cast<uint32_t>(vertexAttribDesc.size()))
+            .setPVertexAttributeDescriptions(vertexAttribDesc.data());
 
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
         inputAssembly.setTopology(vk::PrimitiveTopology::eTriangleList);
@@ -178,8 +254,7 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             .setRasterizerDiscardEnable(false)
             .setPolygonMode(vk::PolygonMode::eFill)
             .setLineWidth(1)
-            .setCullMode(vk::CullModeFlagBits::eBack)
-            .setFrontFace(vk::FrontFace::eClockwise);
+            .setCullMode(vk::CullModeFlagBits::eNone);
 
         vk::PipelineMultisampleStateCreateInfo multisampleState;
         multisampleState
@@ -200,8 +275,14 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             .setAttachmentCount(1)
             .setPAttachments(&colorBlendAttachment);
 
+        descSetLayout_ = UniformBufferObject::createDescSetLayout(device_);
+        vk::DescriptorSetLayout descSetLayoutRaw[] = { descSetLayout_.get() };
+
         vk::PipelineLayoutCreateInfo layoutInfo;
-        layout_ = window.getDevice().createPipelineLayoutUnique(layoutInfo);
+        layoutInfo
+            .setSetLayoutCount(1)
+            .setPSetLayouts(descSetLayoutRaw);
+        pipelineLayout_ = window.getDevice().createPipelineLayoutUnique(layoutInfo);
 
         vk::GraphicsPipelineCreateInfo pipelineInfo;
         pipelineInfo
@@ -213,7 +294,7 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             .setPRasterizationState(&rasterizerState)
             .setPMultisampleState(&multisampleState)
             .setPColorBlendState(&blendState)
-            .setLayout(layout_.get())
+            .setLayout(pipelineLayout_.get())
             .setRenderPass(renderpass_.get())
             .setSubpass(0)
             .setBasePipelineIndex(-1);
@@ -240,6 +321,120 @@ class TrianglePipeline : public agz::misc::uncopyable_t
 
             framebuffers_.push_back(
                 window.getDevice().createFramebufferUnique(info));
+        }
+    }
+
+    void initVertexIndexBuffer(const agz::vlab::Window &window)
+    {
+        allocator_ = std::make_unique<agz::vlab::VMAAlloc>(
+            window.getInstance(),
+            window.getPhysicalDevice(),
+            window.getDevice());
+
+        // vertex buffer
+
+        const Vertex vertexData[] = {
+            { { -0.5f, +0.5f }, { 1.0f, 0.0f, 0.0f } },
+            { { -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+            { { +0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f } },
+            { { +0.5f, +0.5f }, { 0.0f, 1.0f, 1.0f } }
+        };
+
+        vk::BufferCreateInfo bufInfo;
+        bufInfo
+            .setSize(sizeof(vertexData))
+            .setUsage(vk::BufferUsageFlagBits::eVertexBuffer)
+            .setSharingMode(vk::SharingMode::eExclusive);
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+        vertexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedVertexBufferData = vertexBuffer_.map();
+        std::memcpy(mappedVertexBufferData, vertexData, sizeof(vertexData));
+        vertexBuffer_.unmap();
+
+        // index buffer
+
+        const uint16_t indexData[] = { 0, 1, 2, 0, 2, 3 };
+
+        bufInfo
+            .setSize(sizeof(indexData))
+            .setUsage(vk::BufferUsageFlagBits::eIndexBuffer);
+
+        indexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedIndexBufferData = indexBuffer_.map();
+        std::memcpy(mappedIndexBufferData, indexData, sizeof(indexData));
+        indexBuffer_.unmap();
+    }
+
+    void initUniformBuffers(const agz::vlab::Window &window)
+    {
+        vk::BufferCreateInfo bufInfo;
+        bufInfo
+            .setSize(sizeof(UniformBufferObject))
+            .setUsage(vk::BufferUsageFlagBits::eUniformBuffer)
+            .setSharingMode(vk::SharingMode::eExclusive);
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+        for(uint32_t i = 0; i < window.getSwapchainImageCount(); ++i)
+        {
+            uniformBuffers_.push_back(
+                allocator_->createBufferUnique(bufInfo, allocInfo));
+        }
+    }
+
+    void initDescriptorPool(const agz::vlab::Window &window)
+    {
+        vk::DescriptorPoolSize poolSize;
+        poolSize
+            .setDescriptorCount(window.getSwapchainImageCount())
+            .setType(vk::DescriptorType::eUniformBuffer);
+
+        vk::DescriptorPoolCreateInfo info;
+        info
+            .setMaxSets(window.getSwapchainImageCount())
+            .setPoolSizeCount(1)
+            .setPPoolSizes(&poolSize);
+
+        descPool_ = device_.createDescriptorPoolUnique(info);
+    }
+
+    void initDescriptorSets(const agz::vlab::Window &window)
+    {
+        std::vector<vk::DescriptorSetLayout> layout(
+            window.getSwapchainImageCount(), descSetLayout_.get());
+
+        vk::DescriptorSetAllocateInfo allocInfo;
+        allocInfo
+            .setDescriptorPool(descPool_.get())
+            .setDescriptorSetCount(window.getSwapchainImageCount())
+            .setPSetLayouts(layout.data());
+
+        descSets_ = device_.allocateDescriptorSets(allocInfo);
+
+        for(uint32_t i = 0; i < window.getSwapchainImageCount(); ++i)
+        {
+            vk::DescriptorBufferInfo bufInfo;
+            bufInfo
+                .setBuffer(uniformBuffers_[i].get())
+                .setOffset(0)
+                .setRange(sizeof(UniformBufferObject));
+
+            vk::WriteDescriptorSet descWrite;
+            descWrite
+                .setDescriptorCount(1)
+                .setDescriptorType(vk::DescriptorType::eUniformBuffer)
+                .setDstArrayElement(0)
+                .setDstBinding(0)
+                .setDstSet(descSets_[i])
+                .setPBufferInfo(&bufInfo);
+
+            device_.updateDescriptorSets(1, &descWrite, 0, nullptr);
         }
     }
 
@@ -280,7 +475,18 @@ class TrianglePipeline : public agz::misc::uncopyable_t
             cb.beginRenderPass(renderpassInfo, vk::SubpassContents::eInline);
 
             cb.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_.get());
-            cb.draw(3, 1, 0, 0);
+
+            vk::Buffer vertexBuffers[] = { vertexBuffer_.get() };
+            vk::DeviceSize offsets[]   = { 0 };
+            cb.bindVertexBuffers(0, 1, vertexBuffers, offsets);
+
+            cb.bindIndexBuffer(indexBuffer_.get(), 0, vk::IndexType::eUint16);
+
+            cb.bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics, pipelineLayout_.get(),
+                0, 1, &descSets_[i], 0, nullptr);
+            
+            cb.drawIndexed(6, 1, 0, 0, 0);
 
             cb.endRenderPass();
             cb.end();
@@ -306,15 +512,45 @@ class TrianglePipeline : public agz::misc::uncopyable_t
         }
     }
 
+    void updateUniformBuffer(const float wOverH, uint32_t imageIndex)
+    {
+        using Clock = std::chrono::high_resolution_clock;
+
+        const static auto start = Clock::now();
+
+        const float durationS = std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock::now() - start).count() / 1e6f;
+
+        Mat4 proj = Trans4::perspective(
+            agz::math::deg2rad(60.0f), wOverH, 0.1f, 100.0f);
+        proj[1][1] *= -1;
+
+        const Mat4 projViewModel =
+            proj
+          * Trans4::look_at({ 0, 0, -1.5f }, { 0, 0, 0 }, { 0, 1, 0 })
+          * Trans4::rotate_y(durationS);
+
+        const UniformBufferObject ubData = { projViewModel };
+
+        auto &ub = uniformBuffers_[imageIndex];
+        void *mappedData = ub.map();
+        std::memcpy(mappedData, &ubData, sizeof(ubData));
+        ub.unmap();
+    }
+
     void preRecreateSwapchain()
     {
         device_.waitIdle();
 
         cmdBuffers_.clear();
         cmdPool_.reset();
+        descSets_.clear();
+        descPool_.reset();
+        uniformBuffers_.clear();
         framebuffers_.clear();
         pipeline_.reset();
-        layout_.reset();
+        pipelineLayout_.reset();
+        descSetLayout_.reset();
         renderpass_.reset();
     }
 
@@ -323,12 +559,15 @@ class TrianglePipeline : public agz::misc::uncopyable_t
         initRenderpass(window);
         initGraphicsPipeline(window);
         initFramebuffer(window);
+        initUniformBuffers(window);
+        initDescriptorPool(window);
+        initDescriptorSets(window);
         initCmdBuffers(window);
     }
 
 public:
 
-    explicit TrianglePipeline(agz::vlab::Window &window)
+    explicit UniformBufferPipeline(agz::vlab::Window &window)
     {
         device_ = window.getDevice();
 
@@ -336,6 +575,10 @@ public:
         initShaders(window.getDevice());
         initGraphicsPipeline(window);
         initFramebuffer(window);
+        initVertexIndexBuffer(window);
+        initUniformBuffers(window);
+        initDescriptorPool(window);
+        initDescriptorSets(window);
         initCmdBuffers(window);
         initSync(window);
 
@@ -357,7 +600,7 @@ public:
         window.attach<agz::vlab::WindowPostRecreateSwapchainEvent>(postHandler);
     }
 
-    ~TrianglePipeline()
+    ~UniformBufferPipeline()
     {
         imageSemaphores_.clear();
         renderSemaphores_.clear();
@@ -367,10 +610,20 @@ public:
         cmdBuffers_.clear();
         cmdPool_.reset();
 
+        descSets_.clear();
+        descPool_.reset();
+        uniformBuffers_.clear();
+
+        vertexBuffer_.reset();
+        indexBuffer_.reset();
+
+        allocator_.reset();
+
         framebuffers_.clear();
 
         pipeline_.reset();
-        layout_.reset();
+        pipelineLayout_.reset();
+        descSetLayout_.reset();
 
         vertShader_.reset();
         fragShader_.reset();
@@ -393,9 +646,12 @@ public:
         }
         imageInFlight_[imageIndex] = inFlightFrames_[currentFrame_].get();
 
+        updateUniformBuffer(window.getSwapchainAspectRatio(), imageIndex);
+
         vk::Semaphore waitSemaphores[] = {
             imageSemaphores_[currentFrame_].get()
         };
+
         vk::PipelineStageFlags waitStages[] = {
             vk::PipelineStageFlagBits::eColorAttachmentOutput
         };
@@ -432,14 +688,11 @@ public:
 
         currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
     }
-
-    void waitIdle()
-    {
-        device_.waitIdle();
-    }
 };
 
-int run()
+#include <agz/utility/time.h>
+
+void run()
 {
     agz::vlab::ValidationLayerManager layers;
     layers.add("VK_LAYER_KHRONOS_validation");
@@ -447,7 +700,7 @@ int run()
     agz::vlab::Window window;
     window.Initialize(agz::vlab::WindowDesc()
         .setSize(640, 480)
-        .setTitle("AirGuanZ's Vulkan Lab: 01.triangle")
+        .setTitle("AirGuanZ's Vulkan Lab: 03.uniform buffer")
         .setDebugMessage(true)
         .setLayers(&layers)
         .setResizable(true));
@@ -455,7 +708,10 @@ int run()
     window.getDebugMsgMgr()->enableStdErrOutput(
         agz::vlab::DebugMsgLevel::Verbose);
 
-    TrianglePipeline pipeline(window);
+    UniformBufferPipeline pipeline(window);
+
+    agz::time::fps_counter_t fps;
+    fps.restart();
 
     while(!window.getCloseFlag())
     {
@@ -463,15 +719,14 @@ int run()
         pipeline.renderFrame(window);
     }
 
-    pipeline.waitIdle();
-    return 0;
+    window.getDevice().waitIdle();
 }
 
 int main()
 {
     try
     {
-        return run();
+        run();
     }
     catch(const std::exception &err)
     {

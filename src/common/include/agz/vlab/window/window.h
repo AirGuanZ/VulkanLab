@@ -89,6 +89,8 @@ public:
 
     vk::Extent2D getSwapchainExtent() const noexcept;
 
+    float getSwapchainAspectRatio() const noexcept;
+
     const std::vector<vk::UniqueImageView> &
         getSwapchainImageViews() const noexcept;
 

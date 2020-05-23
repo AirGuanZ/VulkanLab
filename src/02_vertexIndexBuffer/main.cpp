@@ -285,6 +285,52 @@ class VertexIndexBufferPipeline : public agz::misc::uncopyable_t
         }
     }
 
+    void initVertexIndexBuffer(const agz::vlab::Window &window)
+    {
+        allocator_ = std::make_unique<agz::vlab::VMAAlloc>(
+            window.getInstance(),
+            window.getPhysicalDevice(),
+            window.getDevice());
+
+        // vertex buffer
+
+        const Vertex vertexData[] = {
+            { { -0.5f, +0.5f }, { 1.0f, 0.0f, 0.0f } },
+            { { -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+            { { +0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f } },
+            { { +0.5f, +0.5f }, { 0.0f, 1.0f, 1.0f } }
+        };
+
+        vk::BufferCreateInfo bufInfo;
+        bufInfo
+            .setSize(sizeof(vertexData))
+            .setUsage(vk::BufferUsageFlagBits::eVertexBuffer)
+            .setSharingMode(vk::SharingMode::eExclusive);
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+        vertexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedVertexBufferData = vertexBuffer_.map();
+        std::memcpy(mappedVertexBufferData, vertexData, sizeof(vertexData));
+        vertexBuffer_.unmap();
+
+        // index buffer
+
+        const uint16_t indexData[] = { 0, 1, 2, 0, 2, 3 };
+
+        bufInfo
+            .setSize(sizeof(indexData))
+            .setUsage(vk::BufferUsageFlagBits::eIndexBuffer);
+
+        indexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
+
+        void *mappedIndexBufferData = indexBuffer_.map();
+        std::memcpy(mappedIndexBufferData, indexData, sizeof(indexData));
+        indexBuffer_.unmap();
+    }
+
     void initCmdBuffers(const agz::vlab::Window &window)
     {
         vk::CommandPoolCreateInfo poolInfo;
@@ -327,8 +373,6 @@ class VertexIndexBufferPipeline : public agz::misc::uncopyable_t
             vk::DeviceSize offsets[]   = { 0 };
             cb.bindVertexBuffers(0, 1, vertexBuffers, offsets);
 
-            //cb.draw(3, 1, 0, 0);
-
             cb.bindIndexBuffer(indexBuffer_.get(), 0, vk::IndexType::eUint16);
             
             cb.drawIndexed(6, 1, 0, 0, 0);
@@ -355,52 +399,6 @@ class VertexIndexBufferPipeline : public agz::misc::uncopyable_t
             renderSemaphores_.push_back(device.createSemaphoreUnique(semaphoreInfo));
             inFlightFrames_.push_back(device.createFenceUnique(fenceInfo));
         }
-    }
-
-    void initVertexIndexBuffer(const agz::vlab::Window &window)
-    {
-        allocator_ = std::make_unique<agz::vlab::VMAAlloc>(
-            window.getInstance(),
-            window.getPhysicalDevice(),
-            window.getDevice());
-
-        // vertex buffer
-
-        const Vertex vertexData[] = {
-            { { -0.5f, +0.5f }, { 1.0f, 0.0f, 0.0f } },
-            { { -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
-            { { +0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f } },
-            { { +0.5f, +0.5f }, { 0.0f, 1.0f, 1.0f } }
-        };
-
-        vk::BufferCreateInfo bufInfo;
-        bufInfo
-            .setSize(sizeof(vertexData))
-            .setUsage(vk::BufferUsageFlagBits::eVertexBuffer)
-            .setSharingMode(vk::SharingMode::eExclusive);
-
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-
-        vertexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
-
-        void *mappedVertexBufferData = vertexBuffer_.map();
-        std::memcpy(mappedVertexBufferData, vertexData, sizeof(vertexData));
-        vertexBuffer_.unmap();
-
-        // index buffer
-
-        const uint16_t indexData[] = { 0, 1, 2, 2, 3, 0 };
-
-        bufInfo
-            .setSize(sizeof(indexData))
-            .setUsage(vk::BufferUsageFlagBits::eIndexBuffer);
-
-        indexBuffer_ = allocator_->createBufferUnique(bufInfo, allocInfo);
-
-        void *mappedIndexBufferData = indexBuffer_.map();
-        std::memcpy(mappedIndexBufferData, indexData, sizeof(indexData));
-        indexBuffer_.unmap();
     }
 
     void preRecreateSwapchain()
@@ -578,5 +576,6 @@ int main()
     catch(const std::exception &err)
     {
         std::cout << err.what() << std::endl;
+        return -1;
     }
 }

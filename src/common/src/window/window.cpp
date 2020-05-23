@@ -637,6 +637,12 @@ vk::Extent2D Window::getSwapchainExtent() const noexcept
     return data_->swapchainExtent;
 }
 
+float Window::getSwapchainAspectRatio() const noexcept
+{
+    return static_cast<float>(data_->swapchainExtent.width)
+         / static_cast<float>(data_->swapchainExtent.height);
+}
+
 const std::vector<vk::UniqueImageView> &
     Window::getSwapchainImageViews() const noexcept
 {

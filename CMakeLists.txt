@@ -35,5 +35,6 @@ ADD_SUBDIRECTORY(src/common)
 ADD_SUBDIRECTORY(src/00_init)
 ADD_SUBDIRECTORY(src/01_triangle)
 ADD_SUBDIRECTORY(src/02_vertexIndexBuffer)
+ADD_SUBDIRECTORY(src/03_uniformBuffer)
 
 SET_TARGET_PROPERTIES(glfw AGZUtils PROPERTIES FOLDER "ThirdParty")
