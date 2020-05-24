@@ -142,27 +142,18 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     {
         // create staging buffer
 
-        vk::BufferCreateInfo bufInfo;
-        bufInfo
-            .setSize(byteSize)
-            .setUsage(vk::BufferUsageFlagBits::eTransferSrc)
-            .setSharingMode(vk::SharingMode::eExclusive);
-
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-
-        auto stagingBuffer = allocator_->createBufferUnique(bufInfo, allocInfo);
-
-        // copy data from cpu to gpu
-
-        void *mappedData = stagingBuffer.map();
-        std::memcpy(mappedData, initData, byteSize);
-        stagingBuffer.unmap();
+        auto stagingBuffer = allocator_->createStagingBufferUnique(
+            byteSize, initData);
 
         // create ret buffer
 
-        bufInfo.setUsage(usage | vk::BufferUsageFlagBits::eTransferDst);
+        vk::BufferCreateInfo bufInfo;
+        bufInfo
+            .setSize(byteSize)
+            .setUsage(usage | vk::BufferUsageFlagBits::eTransferDst)
+            .setSharingMode(vk::SharingMode::eExclusive);
 
+        VmaAllocationCreateInfo allocInfo = {};
         allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         auto ret = allocator_->createBufferUnique(bufInfo, allocInfo);
@@ -688,9 +679,12 @@ public:
     {
         vk::Fence frameFence[] = { inFlightFrames_[currentFrame_].get() };
         (void)device_.waitForFences(1, frameFence, true, UINT64_MAX);
-        
-        const auto imageIndex = window.acquireNextImage(
-            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr).value;
+
+        const auto nextImageResult = window.acquireNextImage(
+            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr);
+        if(nextImageResult.result == vk::Result::eErrorOutOfDateKHR)
+            window.recreateSwapchain();
+        const uint32_t imageIndex = nextImageResult.value;
 
         if(imageInFlight_[imageIndex])
         {

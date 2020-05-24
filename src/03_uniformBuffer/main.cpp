@@ -635,9 +635,12 @@ public:
     {
         vk::Fence frameFence[] = { inFlightFrames_[currentFrame_].get() };
         (void)device_.waitForFences(1, frameFence, true, UINT64_MAX);
-        
-        const auto imageIndex = window.acquireNextImage(
-            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr).value;
+
+        const auto nextImageResult = window.acquireNextImage(
+            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr);
+        if(nextImageResult.result == vk::Result::eErrorOutOfDateKHR)
+            window.recreateSwapchain();
+        const uint32_t imageIndex = nextImageResult.value;
 
         if(imageInFlight_[imageIndex])
         {

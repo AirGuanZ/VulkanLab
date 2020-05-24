@@ -28,8 +28,6 @@ public:
 
     vk::Buffer get() const noexcept;
 
-    vk::DeviceMemory getDeviceMemory() const noexcept;
-
     VmaAllocation getAlloc() const noexcept;
 
     void swap(VMAUniqueBuffer &other) noexcept;
@@ -43,8 +41,6 @@ private:
     vk::Buffer    buffer_;
     VmaAllocation alloc_;
     VmaAllocator  allocator_;
-
-    VmaAllocationInfo allocInfo_;
 };
 
 class VMAAlloc : public misc::uncopyable_t
@@ -66,6 +62,9 @@ public:
         const vk::BufferCreateInfo    &bufferCreateInfo,
         const VmaAllocationCreateInfo &allocCreateInfo);
 
+    VMAUniqueBuffer createStagingBufferUnique(
+        size_t byteSize, const void *initData);
+
 private:
 
     VmaAllocator alloc_ = nullptr;
@@ -81,8 +80,7 @@ inline VMAUniqueBuffer::VMAUniqueBuffer(
     vk::Buffer buffer, VmaAllocation alloc, VmaAllocator allocator)
     : buffer_(buffer), alloc_(alloc), allocator_(allocator)
 {
-    if(buffer_)
-        vmaGetAllocationInfo(allocator_, alloc_, &allocInfo_);
+
 }
 
 inline VMAUniqueBuffer::VMAUniqueBuffer(VMAUniqueBuffer &&other) noexcept
@@ -108,27 +106,16 @@ inline void VMAUniqueBuffer::reset(
     vk::Buffer buffer, VmaAllocation alloc, VmaAllocator allocator)
 {
     if(buffer_)
-    {
         vmaDestroyBuffer(allocator_, buffer_, alloc_);
-        allocInfo_ = {};
-    }
 
     buffer_    = buffer;
     alloc_     = alloc;
     allocator_ = allocator;
-
-    if(buffer_)
-        vmaGetAllocationInfo(allocator_, alloc_, &allocInfo_);
 }
 
 inline vk::Buffer VMAUniqueBuffer::get() const noexcept
 {
     return buffer_;
-}
-
-inline vk::DeviceMemory VMAUniqueBuffer::getDeviceMemory() const noexcept
-{
-    return allocInfo_.deviceMemory;
 }
 
 inline VmaAllocation VMAUniqueBuffer::getAlloc() const noexcept
@@ -141,7 +128,6 @@ inline void VMAUniqueBuffer::swap(VMAUniqueBuffer &other) noexcept
     std::swap(buffer_,    other.buffer_);
     std::swap(alloc_,     other.alloc_);
     std::swap(allocator_, other.allocator_);
-    std::swap(allocInfo_, other.allocInfo_);
 }
 
 inline void *VMAUniqueBuffer::map() const
@@ -207,6 +193,30 @@ inline VMAUniqueBuffer VMAAlloc::createBufferUnique(
 {
     auto [buffer, alloc] = createBuffer(bufferCreateInfo, allocCreateInfo);
     return VMAUniqueBuffer(buffer, alloc, alloc_);
+}
+
+inline VMAUniqueBuffer VMAAlloc::createStagingBufferUnique(
+    size_t byteSize, const void *initData)
+{
+    vk::BufferCreateInfo bufInfo;
+    bufInfo
+        .setSize(byteSize)
+        .setUsage(vk::BufferUsageFlagBits::eTransferSrc)
+        .setSharingMode(vk::SharingMode::eExclusive);
+
+    VmaAllocationCreateInfo allocInfo = {};
+    allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+    auto ret = createBufferUnique(bufInfo, allocInfo);
+
+    if(initData)
+    {
+        void *mappedData = ret.map();
+        std::memcpy(mappedData, initData, byteSize);
+        ret.unmap();
+    }
+
+    return ret;
 }
 
 AGZ_VULKAN_LAB_END
