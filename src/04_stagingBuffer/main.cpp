@@ -100,6 +100,20 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         }
     };
 
+    struct FrameResource
+    {
+        vk::UniqueFramebuffer framebuffer;
+        vk::CommandBuffer cmdBuf;
+
+        vk::UniqueSemaphore imageSemaphore;
+        vk::UniqueSemaphore renderSemaphore;
+
+        vk::UniqueFence frameFence;
+
+        agz::vlab::VMAUniqueBuffer uniformBuf;
+        vk::DescriptorSet descSet;
+    };
+
     vk::Device device_;
 
     vk::UniqueShaderModule vertShader_;
@@ -115,15 +129,8 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     std::vector<vk::UniqueFramebuffer> framebuffers_;
 
     vk::UniqueCommandPool cmdPool_;
-    std::vector<vk::CommandBuffer> cmdBuffers_;
 
-    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-
-    std::vector<vk::UniqueSemaphore> imageSemaphores_;
-    std::vector<vk::UniqueSemaphore> renderSemaphores_;
-
-    std::vector<vk::UniqueFence> inFlightFrames_;
-    std::vector<vk::Fence>       imageInFlight_;
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 
     uint32_t currentFrame_ = 0;
 
@@ -132,9 +139,9 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     agz::vlab::VMAUniqueBuffer vertexBuffer_;
     agz::vlab::VMAUniqueBuffer indexBuffer_;
 
-    std::vector<agz::vlab::VMAUniqueBuffer> uniformBuffers_;
     vk::UniqueDescriptorPool descPool_;
-    std::vector<vk::DescriptorSet> descSets_;
+
+    std::vector<FrameResource> frameRscs_;
 
     agz::vlab::VMAUniqueBuffer createDeviceBuffer(
         size_t byteSize, vk::BufferUsageFlags usage, const void *initData,
@@ -201,7 +208,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             agz::vlab::ShaderModuleType::Vertex, false);
         info
             .setCodeSize(vertByteCode.size() *
-                         sizeof(decltype(vertByteCode)::value_type))
+                sizeof(decltype(vertByteCode)::value_type))
             .setPCode(vertByteCode.data());
         vertShader_ = device.createShaderModuleUnique(info);
 
@@ -211,7 +218,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             .setModule(vertShader_.get())
             .setStage(vk::ShaderStageFlagBits::eVertex)
             .setPName("main");
-        
+
         // fragment shader module
 
         const auto fragByteCode = compileGLSLToSPIRV(
@@ -219,7 +226,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             agz::vlab::ShaderModuleType::Fragment, false);
         info
             .setCodeSize(fragByteCode.size() *
-                         sizeof(decltype(fragByteCode)::value_type))
+                sizeof(decltype(fragByteCode)::value_type))
             .setPCode(fragByteCode.data());
         fragShader_ = device.createShaderModuleUnique(info);
 
@@ -234,30 +241,31 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     void initCmdPool(const agz::vlab::Window &window)
     {
         vk::CommandPoolCreateInfo poolInfo;
-        poolInfo.setQueueFamilyIndex(
-            window.getGraphicsDevice().graphicsQueueFamilyIndex());
-
-        cmdPool_ = window.getDevice().createCommandPoolUnique(poolInfo);
+        poolInfo
+            .setQueueFamilyIndex(
+                window.getGraphicsDevice().graphicsQueueFamilyIndex())
+            .setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+        cmdPool_ = device_.createCommandPoolUnique(poolInfo);
     }
 
     void initRenderpass(const agz::vlab::Window &window)
     {
         vk::AttachmentDescription colorAttachment;
         colorAttachment
-            .setFormat        (window.getSwapchainFormat())
-            .setSamples       (vk::SampleCountFlagBits::e1)
-            .setLoadOp        (vk::AttachmentLoadOp::eClear)
-            .setStoreOp       (vk::AttachmentStoreOp::eStore)
-            .setStencilLoadOp (vk::AttachmentLoadOp::eDontCare)
+            .setFormat(window.getSwapchainFormat())
+            .setSamples(vk::SampleCountFlagBits::e1)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
             .setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
-            .setInitialLayout (vk::ImageLayout::eUndefined)
-            .setFinalLayout   (vk::ImageLayout::ePresentSrcKHR);
+            .setInitialLayout(vk::ImageLayout::eUndefined)
+            .setFinalLayout(vk::ImageLayout::ePresentSrcKHR);
 
         vk::AttachmentReference attachmentRef;
         attachmentRef
             .setAttachment(0)
             .setLayout(vk::ImageLayout::eColorAttachmentOptimal);
-        
+
         vk::SubpassDescription subpass;
         subpass
             .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
@@ -282,13 +290,13 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             .setDependencyCount(1)
             .setPDependencies(&dependency);
 
-        renderpass_ = window.getDevice().createRenderPassUnique(info);
+        renderpass_ = device_.createRenderPassUnique(info);
     }
 
     void initGraphicsPipeline(const agz::vlab::Window &window)
     {
         const auto vertexBindingDesc = Vertex::getBindingDesc();
-        const auto vertexAttribDesc  = Vertex::getAttribDesc();
+        const auto vertexAttribDesc = Vertex::getAttribDesc();
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
         vertexInputInfo
             .setVertexBindingDescriptionCount(1)
@@ -299,7 +307,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
         inputAssembly.setTopology(vk::PrimitiveTopology::eTriangleList);
-        
+
         const auto [scX, scY] = window.getSwapchainExtent();
         vk::Viewport viewport(
             0, 0, static_cast<float>(scX), static_cast<float>(scY), 0, 1);
@@ -308,7 +316,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         vk::PipelineViewportStateCreateInfo viewportState;
         viewportState
             .setViewportCount(1).setPViewports(&viewport)
-            .setScissorCount(1) .setPScissors(&scissor);
+            .setScissorCount(1).setPScissors(&scissor);
 
         vk::PipelineRasterizationStateCreateInfo rasterizerState;
         rasterizerState
@@ -345,7 +353,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         layoutInfo
             .setSetLayoutCount(1)
             .setPSetLayouts(descSetLayoutRaw);
-        pipelineLayout_ = window.getDevice().createPipelineLayoutUnique(layoutInfo);
+        pipelineLayout_ = device_.createPipelineLayoutUnique(layoutInfo);
 
         vk::GraphicsPipelineCreateInfo pipelineInfo;
         pipelineInfo
@@ -362,7 +370,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             .setSubpass(0)
             .setBasePipelineIndex(-1);
 
-        pipeline_ = window.getDevice().createGraphicsPipelineUnique(
+        pipeline_ = device_.createGraphicsPipelineUnique(
             nullptr, pipelineInfo);
     }
 
@@ -383,7 +391,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
                 .setLayers(1);
 
             framebuffers_.push_back(
-                window.getDevice().createFramebufferUnique(info));
+                device_.createFramebufferUnique(info));
         }
     }
 
@@ -392,7 +400,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         allocator_ = std::make_unique<agz::vlab::VMAAlloc>(
             window.getInstance(),
             window.getPhysicalDevice(),
-            window.getDevice());
+            device_);
 
         // vertex buffer
 
@@ -418,7 +426,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             indexData, window);
     }
 
-    void initUniformBuffers(const agz::vlab::Window &window)
+    void initUniformBuffers()
     {
         vk::BufferCreateInfo bufInfo;
         bufInfo
@@ -429,10 +437,10 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         VmaAllocationCreateInfo allocInfo = {};
         allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
-        for(uint32_t i = 0; i < window.getSwapchainImageCount(); ++i)
+        for(uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
-            uniformBuffers_.push_back(
-                allocator_->createBufferUnique(bufInfo, allocInfo));
+            frameRscs_[i].uniformBuf =
+                allocator_->createBufferUnique(bufInfo, allocInfo);
         }
     }
 
@@ -440,12 +448,12 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     {
         vk::DescriptorPoolSize poolSize;
         poolSize
-            .setDescriptorCount(window.getSwapchainImageCount())
+            .setDescriptorCount(MAX_FRAMES_IN_FLIGHT)
             .setType(vk::DescriptorType::eUniformBuffer);
 
         vk::DescriptorPoolCreateInfo info;
         info
-            .setMaxSets(window.getSwapchainImageCount())
+            .setMaxSets(MAX_FRAMES_IN_FLIGHT)
             .setPoolSizeCount(1)
             .setPPoolSizes(&poolSize);
 
@@ -455,21 +463,21 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     void initDescriptorSets(const agz::vlab::Window &window)
     {
         std::vector<vk::DescriptorSetLayout> layout(
-            window.getSwapchainImageCount(), descSetLayout_.get());
+            MAX_FRAMES_IN_FLIGHT, descSetLayout_.get());
 
         vk::DescriptorSetAllocateInfo allocInfo;
         allocInfo
             .setDescriptorPool(descPool_.get())
-            .setDescriptorSetCount(window.getSwapchainImageCount())
+            .setDescriptorSetCount(MAX_FRAMES_IN_FLIGHT)
             .setPSetLayouts(layout.data());
 
-        descSets_ = device_.allocateDescriptorSets(allocInfo);
+        auto descSets = device_.allocateDescriptorSets(allocInfo);
 
-        for(uint32_t i = 0; i < window.getSwapchainImageCount(); ++i)
+        for(uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
             vk::DescriptorBufferInfo bufInfo;
             bufInfo
-                .setBuffer(uniformBuffers_[i].get())
+                .setBuffer(frameRscs_[i].uniformBuf.get())
                 .setOffset(0)
                 .setRange(sizeof(UniformBufferObject));
 
@@ -479,10 +487,12 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
                 .setDescriptorType(vk::DescriptorType::eUniformBuffer)
                 .setDstArrayElement(0)
                 .setDstBinding(0)
-                .setDstSet(descSets_[i])
+                .setDstSet(descSets[i])
                 .setPBufferInfo(&bufInfo);
 
             device_.updateDescriptorSets(1, &descWrite, 0, nullptr);
+
+            frameRscs_[i].descSet = descSets[i];
         }
     }
 
@@ -492,55 +502,54 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         allocInfo
             .setCommandPool(cmdPool_.get())
             .setLevel(vk::CommandBufferLevel::ePrimary)
-            .setCommandBufferCount(window.getSwapchainImageCount());
+            .setCommandBufferCount(MAX_FRAMES_IN_FLIGHT);
 
-        cmdBuffers_ = window.getDevice().allocateCommandBuffers(allocInfo);
+        auto cmdBuffers = device_.allocateCommandBuffers(allocInfo);
 
-        for(size_t i = 0; i < cmdBuffers_.size(); ++i)
-        {
-            auto cb = cmdBuffers_[i];
+        for(size_t i = 0; i < cmdBuffers.size(); ++i)
+            frameRscs_[i].cmdBuf = cmdBuffers[i];
+    }
 
-            vk::CommandBufferBeginInfo beginInfo;
+    void recordCommandBuffer(const agz::vlab::Window &window, FrameResource &frame)
+    {
+        auto cb = frame.cmdBuf;
 
-            vk::ClearValue clearValue(vk::ClearColorValue(
-                std::array<float, 4>{ 0, 0, 0, 1 }));
-            
-            vk::RenderPassBeginInfo renderpassInfo;
-            renderpassInfo
-                .setRenderPass(renderpass_.get())
-                .setFramebuffer(framebuffers_[i].get())
-                .setRenderArea({ { 0, 0 }, window.getSwapchainExtent() })
-                .setClearValueCount(1)
-                .setPClearValues(&clearValue);
+        vk::CommandBufferBeginInfo beginInfo;
 
-            cb.begin(beginInfo);
-            cb.beginRenderPass(renderpassInfo, vk::SubpassContents::eInline);
+        vk::ClearValue clearValue(vk::ClearColorValue(
+            std::array<float, 4>{ 0, 0, 0, 1 }));
 
-            cb.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_.get());
+        vk::RenderPassBeginInfo renderpassInfo;
+        renderpassInfo
+            .setRenderPass(renderpass_.get())
+            .setFramebuffer(frame.framebuffer.get())
+            .setRenderArea({ { 0, 0 }, window.getSwapchainExtent() })
+            .setClearValueCount(1)
+            .setPClearValues(&clearValue);
 
-            vk::Buffer vertexBuffers[] = { vertexBuffer_.get() };
-            vk::DeviceSize offsets[]   = { 0 };
-            cb.bindVertexBuffers(0, 1, vertexBuffers, offsets);
+        cb.begin(beginInfo);
+        cb.beginRenderPass(renderpassInfo, vk::SubpassContents::eInline);
 
-            cb.bindIndexBuffer(indexBuffer_.get(), 0, vk::IndexType::eUint16);
+        cb.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_.get());
 
-            cb.bindDescriptorSets(
-                vk::PipelineBindPoint::eGraphics, pipelineLayout_.get(),
-                0, 1, &descSets_[i], 0, nullptr);
-            
-            cb.drawIndexed(6, 1, 0, 0, 0);
+        vk::Buffer vertexBuffers[] = { vertexBuffer_.get() };
+        vk::DeviceSize offsets[] = { 0 };
+        cb.bindVertexBuffers(0, 1, vertexBuffers, offsets);
 
-            cb.endRenderPass();
-            cb.end();
-        }
+        cb.bindIndexBuffer(indexBuffer_.get(), 0, vk::IndexType::eUint16);
+
+        cb.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, pipelineLayout_.get(),
+            0, 1, &frame.descSet, 0, nullptr);
+
+        cb.drawIndexed(6, 1, 0, 0, 0);
+
+        cb.endRenderPass();
+        cb.end();
     }
 
     void initSync(const agz::vlab::Window &window)
     {
-        auto device = window.getDevice();
-
-        imageInFlight_.resize(window.getSwapchainImageCount());
-
         vk::SemaphoreCreateInfo semaphoreInfo;
 
         vk::FenceCreateInfo fenceInfo;
@@ -548,13 +557,17 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
         for(uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
-            imageSemaphores_.push_back(device.createSemaphoreUnique(semaphoreInfo));
-            renderSemaphores_.push_back(device.createSemaphoreUnique(semaphoreInfo));
-            inFlightFrames_.push_back(device.createFenceUnique(fenceInfo));
+            frameRscs_[i].imageSemaphore = device_.createSemaphoreUnique(
+                semaphoreInfo);
+
+            frameRscs_[i].renderSemaphore = device_.createSemaphoreUnique(
+                semaphoreInfo);
+
+            frameRscs_[i].frameFence = device_.createFenceUnique(fenceInfo);
         }
     }
 
-    void updateUniformBuffer(const float wOverH, uint32_t imageIndex)
+    void updateUniformBuffer(const float wOverH, FrameResource &frame)
     {
         using Clock = std::chrono::high_resolution_clock;
 
@@ -569,12 +582,12 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
         const Mat4 projViewModel =
             proj
-          * Trans4::look_at({ 0, 0, -1.5f }, { 0, 0, 0 }, { 0, 1, 0 })
-          * Trans4::rotate_y(durationS);
+            * Trans4::look_at({ 0, 0, -1.5f }, { 0, 0, 0 }, { 0, 1, 0 })
+            * Trans4::rotate_y(durationS);
 
         const UniformBufferObject ubData = { projViewModel };
 
-        auto &ub = uniformBuffers_[imageIndex];
+        auto &ub = frame.uniformBuf;
         void *mappedData = ub.map();
         std::memcpy(mappedData, &ubData, sizeof(ubData));
         ub.unmap();
@@ -584,10 +597,15 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     {
         device_.waitIdle();
 
-        cmdBuffers_.clear();
-        descSets_.clear();
+        for(auto &f : frameRscs_)
+        {
+            f.cmdBuf = nullptr;
+            f.descSet = nullptr;
+            f.uniformBuf.reset();
+            f.framebuffer.reset();
+        }
+
         descPool_.reset();
-        uniformBuffers_.clear();
         framebuffers_.clear();
         pipeline_.reset();
         pipelineLayout_.reset();
@@ -602,7 +620,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         initRenderpass(window);
         initGraphicsPipeline(window);
         initFramebuffer(window);
-        initUniformBuffers(window);
+        initUniformBuffers();
         initDescriptorPool(window);
         initDescriptorSets(window);
         initCmdBuffers(window);
@@ -614,13 +632,15 @@ public:
     {
         device_ = window.getDevice();
 
+        frameRscs_.resize(MAX_FRAMES_IN_FLIGHT);
+
         initCmdPool(window);
         initRenderpass(window);
-        initShaders(window.getDevice());
+        initShaders(device_);
         initGraphicsPipeline(window);
         initFramebuffer(window);
         initVertexIndexBuffer(window);
-        initUniformBuffers(window);
+        initUniformBuffers();
         initDescriptorPool(window);
         initDescriptorSets(window);
         initCmdBuffers(window);
@@ -628,14 +648,14 @@ public:
 
         auto preHandler = std::make_shared<agz::event::functional_receiver_t<
             agz::vlab::WindowPreRecreateSwapchainEvent>>(
-                [&](const agz::vlab::WindowPreRecreateSwapchainEvent&)
+                [&](const agz::vlab::WindowPreRecreateSwapchainEvent &)
         {
             preRecreateSwapchain();
         });
 
         auto postHandler = std::make_shared<agz::event::functional_receiver_t<
             agz::vlab::WindowPostRecreateSwapchainEvent>>(
-                [&](const agz::vlab::WindowPostRecreateSwapchainEvent&)
+                [&](const agz::vlab::WindowPostRecreateSwapchainEvent &)
         {
             postRecreateSwapchain(window);
         });
@@ -646,16 +666,16 @@ public:
 
     ~StagingBufferPipeline()
     {
-        imageSemaphores_.clear();
-        renderSemaphores_.clear();
-        inFlightFrames_.clear();
-        imageInFlight_.clear();
+        for(auto &f : frameRscs_)
+        {
+            f.imageSemaphore.reset();
+            f.renderSemaphore.reset();
+            f.frameFence.reset();
+            f.uniformBuf.reset();
+            f.framebuffer.reset();
+        }
 
-        cmdBuffers_.clear();
-
-        descSets_.clear();
         descPool_.reset();
-        uniformBuffers_.clear();
 
         vertexBuffer_.reset();
         indexBuffer_.reset();
@@ -677,26 +697,41 @@ public:
 
     void renderFrame(agz::vlab::Window &window)
     {
-        vk::Fence frameFence[] = { inFlightFrames_[currentFrame_].get() };
+        auto &frame = frameRscs_[currentFrame_];
+
+        vk::Fence frameFence[] = { frame.frameFence.get() };
         (void)device_.waitForFences(1, frameFence, true, UINT64_MAX);
+        (void)device_.resetFences(1, frameFence);
 
         const auto nextImageResult = window.acquireNextImage(
-            UINT64_MAX, imageSemaphores_[currentFrame_].get(), nullptr);
+            UINT64_MAX, frame.imageSemaphore.get(), nullptr);
         if(nextImageResult.result == vk::Result::eErrorOutOfDateKHR)
-            window.recreateSwapchain();
+            return window.recreateSwapchain();
         const uint32_t imageIndex = nextImageResult.value;
 
-        if(imageInFlight_[imageIndex])
-        {
-            device_.waitForFences(
-                1, &imageInFlight_[imageIndex], true, UINT64_MAX);
-        }
-        imageInFlight_[imageIndex] = inFlightFrames_[currentFrame_].get();
+        if(frame.framebuffer)
+            frame.framebuffer.reset();
 
-        updateUniformBuffer(window.getSwapchainAspectRatio(), imageIndex);
+        {
+            auto &iv = window.getSwapchainImageViews()[imageIndex];
+            vk::ImageView attachments[] = { iv.get() };
+
+            vk::FramebufferCreateInfo info;
+            info
+                .setRenderPass(renderpass_.get())
+                .setAttachmentCount(1)
+                .setPAttachments(attachments)
+                .setWidth(window.getSwapchainExtent().width)
+                .setHeight(window.getSwapchainExtent().height)
+                .setLayers(1);
+
+            frame.framebuffer = device_.createFramebufferUnique(info);
+        }
+
+        updateUniformBuffer(window.getSwapchainAspectRatio(), frame);
 
         vk::Semaphore waitSemaphores[] = {
-            imageSemaphores_[currentFrame_].get()
+            frame.imageSemaphore.get()
         };
 
         vk::PipelineStageFlags waitStages[] = {
@@ -704,8 +739,10 @@ public:
         };
 
         vk::Semaphore signalSemaphores[] = {
-            renderSemaphores_[currentFrame_].get()
+            frame.renderSemaphore.get()
         };
+
+        recordCommandBuffer(window, frame);
 
         vk::SubmitInfo submitInfo;
         submitInfo
@@ -713,13 +750,11 @@ public:
             .setPWaitSemaphores(waitSemaphores)
             .setPWaitDstStageMask(waitStages)
             .setCommandBufferCount(1)
-            .setPCommandBuffers(&cmdBuffers_[imageIndex])
+            .setPCommandBuffers(&frame.cmdBuf)
             .setSignalSemaphoreCount(1)
             .setPSignalSemaphores(signalSemaphores);
 
-        (void)device_.resetFences(1, frameFence);
-        (void)window.getGraphicsQueue().submit(
-            1, &submitInfo, inFlightFrames_[currentFrame_].get());
+        (void)window.getGraphicsQueue().submit(1, &submitInfo, frameFence[0]);
 
         vk::SwapchainKHR swapchains[] = { window.getSwapchain() };
 
