@@ -3,6 +3,7 @@
 
 #include <vma/vk_mem_alloc.h>
 
+#include <agz/utility/image.h>
 #include <agz/vlab/vlab.h>
 
 using agz::vlab::Vec2;
@@ -19,36 +20,38 @@ layout(set = 0, binding = 0) uniform UniformBufferObject
 } ubo;
 
 layout(location = 0) in vec2 iPosition;
-layout(location = 1) in vec3 iColor;
+layout(location = 1) in vec2 iTexCoord;
 
-layout(location = 0) out vec3 oColor;
+layout(location = 0) out vec2 oTexCoord;
 
 void main()
 {
     gl_Position = ubo.projViewModel * vec4(iPosition, 0.0, 1.0);
-    oColor = iColor;
+    oTexCoord = iTexCoord;
 }
 )___";
 
 const char *FRAGMENT_SHADER_SOURCE = R"___(
 #version 450
 
-layout(location = 0) in vec3 iColor;
+layout(set = 0, binding = 1) uniform sampler2D Texture;
+
+layout(location = 0) in vec2 iTexCoord;
 
 layout(location = 0) out vec4 oColor;
 
 void main()
 {
-    oColor = vec4(iColor, 1.0);
+    oColor = pow(texture(Texture, iTexCoord), vec4(2.2));
 }
 )___";
 
-class StagingBufferPipeline : public agz::misc::uncopyable_t
+class TexturePipeline : public agz::misc::uncopyable_t
 {
     struct Vertex
     {
         Vec2 position;
-        Vec3 color;
+        Vec2 texCoord;
 
         static vk::VertexInputBindingDescription getBindingDesc() noexcept
         {
@@ -71,9 +74,9 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
                 .setOffset(offsetof(Vertex, position));
             ret[1]
                 .setBinding(0)
-                .setFormat(vk::Format::eR32G32B32Sfloat)
+                .setFormat(vk::Format::eR32G32Sfloat)
                 .setLocation(1)
-                .setOffset(offsetof(Vertex, color));
+                .setOffset(offsetof(Vertex, texCoord));
             return ret;
         }
     };
@@ -81,23 +84,6 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
     struct UniformBufferObject
     {
         Mat4 projViewModel;
-
-        static vk::UniqueDescriptorSetLayout createDescSetLayout(vk::Device device)
-        {
-            vk::DescriptorSetLayoutBinding binding;
-            binding
-                .setBinding(0)
-                .setDescriptorCount(1)
-                .setDescriptorType(vk::DescriptorType::eUniformBuffer)
-                .setStageFlags(vk::ShaderStageFlagBits::eVertex);
-
-            vk::DescriptorSetLayoutCreateInfo info;
-            info
-                .setBindingCount(1)
-                .setPBindings(&binding);
-
-            return device.createDescriptorSetLayoutUnique(info);
-        }
     };
 
     struct FrameResource
@@ -116,27 +102,43 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
     vk::Device device_;
 
+    // shader
+
     vk::UniqueShaderModule vertShader_;
     vk::UniqueShaderModule fragShader_;
     vk::PipelineShaderStageCreateInfo shaderStage_[2];
 
+    // renderpass
+
     vk::UniqueRenderPass renderpass_;
+
+    // pipeline
 
     vk::UniqueDescriptorSetLayout descSetLayout_;
     vk::UniquePipelineLayout      pipelineLayout_;
     vk::UniquePipeline            pipeline_;
 
-    vk::UniqueCommandPool cmdPool_;
-
-    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
-
-    uint32_t currentFrame_ = 0;
+    // vertex/index buffer
 
     std::unique_ptr<agz::vlab::VMAAlloc> allocator_;
 
     agz::vlab::VMAUniqueBuffer vertexBuffer_;
     agz::vlab::VMAUniqueBuffer indexBuffer_;
 
+    // shader resource
+
+    agz::vlab::VMAUniqueImage image_;
+    vk::UniqueImageView imageView_;
+
+    vk::UniqueSampler sampler_;
+
+    // frameresource
+
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+
+    uint32_t currentFrame_ = 0;
+
+    vk::UniqueCommandPool    cmdPool_;
     vk::UniqueDescriptorPool descPool_;
 
     std::vector<FrameResource> frameRscs_;
@@ -214,7 +216,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         // vertex shader module
 
         const auto vertByteCode = compileGLSLToSPIRV(
-            VERTEX_SHADER_SOURCE, "", {},
+            VERTEX_SHADER_SOURCE, "vertex shader", {},
             agz::vlab::ShaderModuleType::Vertex, false);
         info
             .setCodeSize(vertByteCode.size() *
@@ -232,7 +234,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         // fragment shader module
 
         const auto fragByteCode = compileGLSLToSPIRV(
-            FRAGMENT_SHADER_SOURCE, "", {},
+            FRAGMENT_SHADER_SOURCE, "fragment shader", {},
             agz::vlab::ShaderModuleType::Fragment, false);
         info
             .setCodeSize(fragByteCode.size() *
@@ -256,6 +258,28 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
                 window.getGraphicsDevice().graphicsQueueFamilyIndex())
             .setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
         cmdPool_ = device_.createCommandPoolUnique(poolInfo);
+    }
+
+    vk::UniqueDescriptorSetLayout createDescSetLayout(vk::Device device)
+    {
+        vk::DescriptorSetLayoutBinding bindings[2];
+        bindings[0]
+            .setBinding(0)
+            .setDescriptorCount(1)
+            .setDescriptorType(vk::DescriptorType::eUniformBuffer)
+            .setStageFlags(vk::ShaderStageFlagBits::eVertex);
+        bindings[1]
+            .setBinding(1)
+            .setDescriptorCount(1)
+            .setDescriptorType(vk::DescriptorType::eCombinedImageSampler)
+            .setStageFlags(vk::ShaderStageFlagBits::eFragment);
+
+        vk::DescriptorSetLayoutCreateInfo info;
+        info
+            .setBindingCount(2)
+            .setPBindings(bindings);
+
+        return device.createDescriptorSetLayoutUnique(info);
     }
 
     void initRenderpass(const agz::vlab::Window &window)
@@ -393,10 +417,10 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
         // vertex buffer
 
         const Vertex vertexData[] = {
-            { { -0.5f, +0.5f }, { 1.0f, 0.0f, 0.0f } },
-            { { -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
-            { { +0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f } },
-            { { +0.5f, +0.5f }, { 0.0f, 1.0f, 1.0f } }
+            { { -0.5f, +0.5f }, { 1.0f, 0.0f } },
+            { { -0.5f, -0.5f }, { 1.0f, 1.0f } },
+            { { +0.5f, -0.5f }, { 0.0f, 1.0f } },
+            { { +0.5f, +0.5f }, { 0.0f, 0.0f } }
         };
 
         vertexBuffer_ = createDeviceBuffer(
@@ -416,18 +440,174 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
     void initDescriptorPool()
     {
-        vk::DescriptorPoolSize poolSize;
-        poolSize
+        vk::DescriptorPoolSize poolSize[2];
+        poolSize[0]
             .setDescriptorCount(MAX_FRAMES_IN_FLIGHT)
             .setType(vk::DescriptorType::eUniformBuffer);
+        poolSize[1]
+            .setDescriptorCount(MAX_FRAMES_IN_FLIGHT)
+            .setType(vk::DescriptorType::eCombinedImageSampler);
 
         vk::DescriptorPoolCreateInfo info;
         info
             .setMaxSets(MAX_FRAMES_IN_FLIGHT)
-            .setPoolSizeCount(1)
-            .setPPoolSizes(&poolSize);
+            .setPoolSizeCount(2)
+            .setPPoolSizes(poolSize);
 
         descPool_ = device_.createDescriptorPoolUnique(info);
+    }
+
+    void initImage(const agz::vlab::Window &window)
+    {
+        // load image data
+
+        auto imgData = agz::img::load_rgba_from_file("05_texture.png");
+        if(!imgData.is_available())
+            throw std::runtime_error("failed to load image data");
+
+        // create image
+
+        vk::ImageCreateInfo imgInfo;
+        imgInfo
+            .setImageType(vk::ImageType::e2D)
+            .setFormat(vk::Format::eR8G8B8A8Unorm)
+            .setExtent({
+                uint32_t(imgData.shape()[1]),
+                uint32_t(imgData.shape()[0]),
+                1 })
+            .setMipLevels(1)
+            .setArrayLayers(1)
+            .setSamples(vk::SampleCountFlagBits::e1)
+            .setTiling(vk::ImageTiling::eOptimal)
+            .setUsage(vk::ImageUsageFlagBits::eTransferDst |
+                      vk::ImageUsageFlagBits::eSampled)
+            .setSharingMode(vk::SharingMode::eExclusive)
+            .setInitialLayout(vk::ImageLayout::eUndefined);
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        image_ = allocator_->createImageUnique(imgInfo, allocInfo);
+
+        // create image view
+
+        vk::ImageViewCreateInfo viewInfo;
+        viewInfo
+            .setImage(image_.get())
+            .setViewType(vk::ImageViewType::e2D)
+            .setFormat(vk::Format::eR8G8B8A8Unorm)
+            .setComponents({
+                vk::ComponentSwizzle::eIdentity,
+                vk::ComponentSwizzle::eIdentity,
+                vk::ComponentSwizzle::eIdentity,
+                vk::ComponentSwizzle::eIdentity})
+            .setSubresourceRange({
+                vk::ImageAspectFlagBits::eColor,
+                0, 1, 0, 1});
+
+        imageView_ = device_.createImageViewUnique(viewInfo);
+
+        // create staging buffer
+
+        auto stagingBuffer = allocator_->createStagingBufferUnique(
+            imgData.elem_count() * sizeof(decltype(imgData)::elem_t),
+            imgData.raw_data());
+
+        // copy texture data
+
+        vk::CommandBufferAllocateInfo cmdBufAllocInfo;
+        cmdBufAllocInfo
+            .setCommandPool(cmdPool_.get())
+            .setCommandBufferCount(1)
+            .setLevel(vk::CommandBufferLevel::ePrimary);
+
+        auto copyCmdBuf = std::move(
+            device_.allocateCommandBuffersUnique(cmdBufAllocInfo)[0]);
+
+        vk::CommandBufferBeginInfo cmdBegInfo;
+        cmdBegInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+
+        copyCmdBuf->begin(cmdBegInfo);
+
+        vk::ImageSubresourceRange imgRng(
+            vk::ImageAspectFlagBits::eColor,
+            0, 1, 0, 1);
+
+        vk::ImageMemoryBarrier imgBarrier1;
+        imgBarrier1
+            .setSrcAccessMask({})
+            .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+            .setOldLayout(vk::ImageLayout::eUndefined)
+            .setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+            .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            .setImage(image_.get())
+            .setSubresourceRange(imgRng);
+
+        copyCmdBuf->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eTransfer,
+            {}, 0, nullptr, 0, nullptr, 1, &imgBarrier1);
+
+        vk::BufferImageCopy bufImgCopy;
+        bufImgCopy
+            .setBufferOffset(0)
+            .setBufferRowLength(0)
+            .setBufferImageHeight(0)
+            .setImageSubresource({
+                vk::ImageAspectFlagBits::eColor, 0, 0, 1 })
+            .setImageOffset({ 0, 0, 0 })
+            .setImageExtent({
+                uint32_t(imgData.shape()[1]),
+                uint32_t(imgData.shape()[0]),
+                1 });
+
+        copyCmdBuf->copyBufferToImage(
+            stagingBuffer.get(), image_.get(),
+            vk::ImageLayout::eTransferDstOptimal, 1,
+            &bufImgCopy);
+
+        vk::ImageMemoryBarrier imgBarrier2;
+        imgBarrier2
+            .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+            .setDstAccessMask(vk::AccessFlagBits::eShaderRead)
+            .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+            .setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal)
+            .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            .setImage(image_.get())
+            .setSubresourceRange(imgRng);
+
+        copyCmdBuf->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eFragmentShader,
+            {}, 0, nullptr, 0, nullptr,
+            1, &imgBarrier2);
+
+        copyCmdBuf->end();
+
+        vk::SubmitInfo submit;
+        submit
+            .setCommandBufferCount(1)
+            .setPCommandBuffers(&copyCmdBuf.get());
+
+        (void)window.getGraphicsQueue().submit(1, &submit, nullptr);
+
+        device_.waitIdle();
+    }
+
+    void initSampler()
+    {
+        vk::SamplerCreateInfo info;
+        info
+            .setMagFilter(vk::Filter::eLinear)
+            .setMinFilter(vk::Filter::eLinear)
+            .setMipmapMode(vk::SamplerMipmapMode::eNearest)
+            .setAddressModeU(vk::SamplerAddressMode::eClampToEdge)
+            .setAddressModeV(vk::SamplerAddressMode::eClampToEdge)
+            .setAddressModeW(vk::SamplerAddressMode::eClampToEdge);
+
+        sampler_ = device_.createSamplerUnique(info);
     }
 
     void initFramebufferResource(FrameResource &frame)
@@ -474,16 +654,29 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
             .setOffset(0)
             .setRange(sizeof(UniformBufferObject));
 
-        vk::WriteDescriptorSet descWrite;
-        descWrite
+        vk::DescriptorImageInfo imageInfo;
+        imageInfo
+            .setImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal)
+            .setImageView(imageView_.get())
+            .setSampler(sampler_.get());
+
+        vk::WriteDescriptorSet descWrite[2];
+        descWrite[0]
             .setDescriptorCount(1)
             .setDescriptorType(vk::DescriptorType::eUniformBuffer)
             .setDstArrayElement(0)
             .setDstBinding(0)
             .setDstSet(frame.descSet)
             .setPBufferInfo(&bufInfo);
+        descWrite[1]
+            .setDescriptorCount(1)
+            .setDescriptorType(vk::DescriptorType::eCombinedImageSampler)
+            .setDstArrayElement(0)
+            .setDstBinding(1)
+            .setDstSet(frame.descSet)
+            .setPImageInfo(&imageInfo);
 
-        device_.updateDescriptorSets(1, &descWrite, 0, nullptr);
+        device_.updateDescriptorSets(2, descWrite, 0, nullptr);
 
         // command buffer
 
@@ -601,7 +794,7 @@ class StagingBufferPipeline : public agz::misc::uncopyable_t
 
 public:
 
-    explicit StagingBufferPipeline(agz::vlab::Window &window)
+    explicit TexturePipeline(agz::vlab::Window &window)
     {
         device_ = window.getDevice();
 
@@ -610,9 +803,11 @@ public:
         initCmdPool(window);
         initRenderpass(window);
         initShaders(device_);
-        descSetLayout_ = UniformBufferObject::createDescSetLayout(device_);
+        descSetLayout_ = createDescSetLayout(device_);
         initGraphicsPipeline(window);
         initVertexIndexBuffer(window);
+        initImage(window);
+        initSampler();
         initDescriptorPool();
 
         for(auto &f : frameRscs_)
@@ -636,11 +831,15 @@ public:
         window.attach<agz::vlab::WindowPostRecreateSwapchainEvent>(postHandler);
     }
 
-    ~StagingBufferPipeline()
+    ~TexturePipeline()
     {
         frameRscs_.clear();
 
         descPool_.reset();
+
+        sampler_.reset();
+        imageView_.reset();
+        image_.reset();
 
         vertexBuffer_.reset();
         indexBuffer_.reset();
@@ -743,7 +942,7 @@ void run()
     agz::vlab::Window window;
     window.Initialize(agz::vlab::WindowDesc()
         .setSize(640, 480)
-        .setTitle("AirGuanZ's Vulkan Lab: 04.staging buffer")
+        .setTitle("AirGuanZ's Vulkan Lab: 05.texture")
         .setDebugMessage(true)
         .setLayers(&layers)
         .setResizable(true));
@@ -751,7 +950,7 @@ void run()
     window.getDebugMsgMgr()->enableStdErrOutput(
         agz::vlab::DebugMsgLevel::Verbose);
 
-    StagingBufferPipeline pipeline(window);
+    TexturePipeline pipeline(window);
 
     while(!window.getCloseFlag())
     {
