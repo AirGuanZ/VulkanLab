@@ -313,7 +313,7 @@ class TexturePipeline : public agz::misc::uncopyable_t
             .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
             .setSrcAccessMask({})
             .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
-            .setDstAccessMask({});
+            .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
 
         vk::RenderPassCreateInfo info;
         info
